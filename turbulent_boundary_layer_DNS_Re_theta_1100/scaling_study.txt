@@ -1,0 +1,19 @@
+# In this scaling study the parameters are:
+# Nodes: normal on Stampede2
+# Grid: 240 x 16 x 20
+# Total time: T = 2
+# Print every: dt = 2
+
+N = 128 | n = 8192 | ps = xxt | statistics: on  | t_step =  3.54463E-01 sec
+N = 64  | n = 4352 | ps = xxt | statistics: on  | t_step =  5.38378E-01 sec    # For T=60 and printing every 5: 4.41707E-01
+N = 64  | n = 4352 | ps = xxt | statistics: off | t_step =  5.40463E-01 sec
+N = 64  | n = 4096 | ps = xxt | statistics: on  | t_step =  5.07952E-01 sec 
+N = 32  | n = 2176 | ps = xxt | statistics: on  | t_step =  8.78933E-01 sec
+N = 32  | n = 2048 | ps = xxt | statistics: on  | t_step =  8.27951E-01 sec
+N = 16  | n = 1024 | ps = xxt | statistics: on  | t_step = 14.53130E-01 sec
+N = 128 | n = 8192 | ps = amg | statistics: on  | t_step =  3.56345E-01 sec
+N = 64  | n = 4352 | ps = amg | statistics: on  | t_step =  5.49144E-01 sec
+N = 64  | n = 4096 | ps = amg | statistics: on  | t_step =  5.23500E-01 sec
+N = 32  | n = 2048 | ps = amg | statistics: on  | t_step =  8.41465E-01 sec
+
+

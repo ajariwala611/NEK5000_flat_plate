@@ -1,0 +1,55 @@
+#
+# nek parameter file
+#
+[GENERAL]
+#startFrom = "restart.t1"
+stopAt = endTime
+endTime = 240.
+
+dt = 0.0025 # In general, use dt = 0.005 but if CFL suddenly blows up, use dt = 0.0025.
+timeStepper = BDF2
+extrapolation = OIFS
+variableDT = no
+targetCFL = 3.5
+
+writeControl = runTime
+writeInterval = 5.0
+writeDoublePrecision = no
+
+# LES filtering
+filtering = hpfrt
+filterWeight = 10
+filterCutoffRatio = 0.9
+
+userParam01 = 60    # xstart: location of inlet along the boundary layer
+userParam02 = 1.0   # Freestream velocity.
+userParam03 = 50    # Proportional gain for immersed boundary forces.
+userParam04 = 50    # Integral gain for immersed boundary forces.
+userParam05 = 120.0  # Start time for averaging
+userParam06 = 1.0   # Output frequency for statistics
+userParam07 = 8.0   # x-location of 1D line of statistics
+userParam08 = 1.25  # z-location of 1D line of statistics
+userParam09 = 0.11  # roughness max height
+userParam10 = 5     # every how many steps to update roughness. A negative value deactivates roughness
+
+[PROBLEMTYPE]
+equation = incompNS
+
+[VELOCITY]
+density = 1
+viscosity = -12000  # A negative value sets 1/nu
+residualTol = 1.e-6
+
+[PRESSURE]
+# preconditioner = semg_amg
+residualProj = yes
+residualTol = 1.e-4
+
+[SCALAR01] # fluctuations in x (after time userParam05)
+solver = none
+
+[SCALAR02] # fluctuations in y (after time userParam05)
+solver = none
+
+[SCALAR03] # fluctuations in z (after time userParam05)
+solver = none

@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH -J tbl_stg # 8-character name
+#SBATCH -o slog # output and error file name (%j expands to jobID)
+#SBATCH -e serr
+#SBATCH -N 32 # total number of nodes
+#SBATCH -n 4096 # total number of mpi tasks requested
+#SBATCH -p normal # queue (partition) -- normal, development, etc.
+#SBATCH -t 01:30:00 # run time (hh:mm:ss)
+#SBATCH -A OTH21032 # Project number
+
+#SBATCH --mail-user=akshit@utexas.edu
+#SBATCH --mail-type=all     # email me when the job finishes
+
+echo flat_plate        >  SESSION.NAME
+echo `pwd`'/' >>  SESSION.NAME
+rm -f logfile
+rm -f ioinfo
+mv flat_plate.log flat_plate.log1 2>/dev/null
+touch flat_plate.log
+ln -sf flat_plate.log logfile
+ibrun ./nek5000 > flat_plate.log
