@@ -1,0 +1,1007 @@
+!-----------------------------------------------------------------------
+!  nek5000 user-file template
+!
+!  user specified routines:
+!     - uservp  : variable properties
+!     - userf   : local acceleration term for fluid
+!     - userq   : local source term for scalars
+!     - userbc  : boundary conditions
+!     - useric  : initial conditions
+!     - userchk : general purpose routine for checking errors etc.
+!     - userqtl : thermal divergence for lowMach number flows 
+!     - usrdat  : modify element vertices 
+!     - usrdat2 : modify mesh coordinates
+!     - usrdat3 : general purpose routine for initialization
+!     
+!-----------------------------------------------------------------------
+!   nek5000 constants
+!
+#define tSTATSTART uparam(5) /* start time for averaging */
+#define tSTATFREQ  uparam(6) /* output frequency for statistics */ 
+#define BETAM 3.5 /* wall normal stretching parameter */
+
+! data extraction along wall normal direction
+#define INTP_NMAX 200 /* number of sample points */
+#define XCINT uparam(7)     /* x coordinate of first 1D line*/
+#define ZCINT uparam(8)     /* z coordinate of all 1D lines */
+#define NLINES 11           /* number of wall-normal lines */
+#define DXCINT 2.0         /* distance in x between lines */
+
+! mesh dimensions
+#define NUMBER_ELEMENTS_X 60
+#define NUMBER_ELEMENTS_Y 12
+#define NUMBER_ELEMENTS_Z 12
+
+!
+!-----------------------------------------------------------------------
+      subroutine uservp(ix,iy,iz,eg) ! set variable properties
+
+!      implicit none
+
+      integer ix,iy,iz,eg
+     
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      integer e
+!     e = gllel(eg)
+
+      udiff  = 0.0
+      utrans = 0.0
+
+      return
+      end
+!-----------------------------------------------------------------------
+      subroutine userf(ix,iy,iz,eg) ! set acceleration term
+!
+!         Note: this is an acceleration term, NOT a force!
+!         Thus, ffx will subsequently be multiplied by rho(x,t).
+!
+!         Note: This function will be used to implemend immersed boundary forces.
+!         Assumes constant rho = 1
+!
+!         Modified by Alex Tsolovikos on 2022-01-12
+!
+          implicit none
+
+          integer ix,iy,iz,eg
+          real pgain, igain
+
+          include 'SIZE'
+          include 'TOTAL'
+          include 'NEKUSE'
+
+          real fxintg(lx1,ly1,lz1,lelt), fyintg(lx1,ly1,lz1,lelt), fzintg(lx1,ly1,lz1,lelt)
+          integer imatrix(lx1,ly1,lz1,lelt)
+          common /ibforces/ fxintg, fyintg, fzintg, imatrix
+
+          real :: Amatrix(lx1,ly1,lz1,lelt), Amat(lx1,ly1,lz1,lelt)
+          real :: A_factor(20000)
+          common /lsm_generator/ Amatrix, Amat, A_factor
+
+          integer e
+          e = gllel(eg)
+
+          pgain = uparam(3)
+          igain = uparam(4)
+
+          ffx = 0.0
+          ffy = 0.0
+          ffz = 0.0
+
+          ! Apply immersed boundary forces
+          ! Note:
+          !     no force:             imatrix = 0 (default)
+          !     solid boundary force: imatrix = 1
+          !     wall roughness:       imatrix = 2
+          !     lsm_generator:        imatrix = 3
+          !
+
+          if (imatrix(ix, iy, iz, e) == 1) then
+              ! Collect error for integral term
+              fxintg(ix, iy, iz, e) = fxintg(ix, iy, iz, e) + vx(ix, iy, iz, e)
+              fyintg(ix, iy, iz, e) = fyintg(ix, iy, iz, e) + vy(ix, iy, iz, e)
+              fzintg(ix, iy, iz, e) = fzintg(ix, iy, iz, e) + vz(ix, iy, iz, e)
+
+              ! PI Controller for IB forces
+              ffx = - pgain * vx(ix, iy, iz, e) - igain * fxintg(ix, iy, iz, e)
+              ffy = - pgain * vy(ix, iy, iz, e) - igain * fyintg(ix, iy, iz, e)
+              ffz = - pgain * vz(ix, iy, iz, e) - igain * fzintg(ix, iy, iz, e)
+          else if (imatrix(ix, iy, iz, e) == 2) then
+              ! P Controller for IB forces
+              ffx = - 0.02 * pgain * vx(ix, iy, iz, e)
+!             ffy = - pgain * vy(ix, iy, iz, e)
+!             ffz = - pgain * vz(ix, iy, iz, e)
+          else if (imatrix(ix, iy, iz, e) == 3) then
+!-----------------------------------------------------------------------
+!Modified by Akshit on 03/24/2022 to add LSM
+              if (istep > 20000) then
+                  Amat(ix,iy,iz,e) = 0.0
+                  ffx = - Amat(ix,iy,iz,e)
+                  write(*,*) "maximum time step for A_factor exceeded"
+              else
+                  Amat(ix,iy,iz,e) = A_factor(istep)*Amatrix(ix,iy,iz,e)
+                  ffx = - Amat(ix,iy,iz,e)
+              end if
+           else
+               ! Actuator
+               call gamma_jet(ix,iy,iz,eg)
+           end if
+ 
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine userq(ix,iy,iz,eg) ! set source term
+
+!          implicit none
+
+          integer ix,iy,iz,eg
+
+          include 'SIZE'
+          include 'TOTAL'
+          include 'NEKUSE'
+
+          integer e
+!         e = gllel(eg)
+
+          qvol   = 0.0
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine userbc(ix,iy,iz,iside,eg) ! set up boundary conditions
+!
+!         NOTE ::: This subroutine MAY NOT be called by every process
+!
+!         The boundary conditions are:
+!             1) Blasius boundary layer at the inlet
+!             2) Convective BC at the outlet
+!             3) No-slip BC at the wall (y=0)
+!             4) v = V_Blasius, du/dy = dv/dx, dw/dy = dv/dz
+!                (zero vorticity) at the top (y=1)
+!             5) Periodic BC at the sides (z=0, z=1)
+!         NOTE ::: Only BCs 1) and 4) are implemented here. The others are 
+!                  implemented by the mesh.
+!         
+          implicit none
+
+          integer ix,iy,iz,iside,eg,e
+
+          include 'SIZE'
+          include 'TOTAL'
+          include 'NEKUSE'
+
+          real ub(lx1,ly1,lz1,lelt), vb(lx1,ly1,lz1,lelt)
+          common /blasiusvel/ ub, vb
+
+          e = gllel(eg)
+
+          if (cbu .eq. 'v  ') then
+              ux   = ub(ix,iy,iz,e)
+              uy   = vb(ix,iy,iz,e)
+              uz   = 0.0
+              temp = 0.0
+          else if (cbu .eq. 'o  ') then
+              pa = 0.0
+          end if
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine useric(ix,iy,iz,eg) ! set up initial conditions
+!
+!         Set the Blasius solution everywhere.
+!         Modified by Alex Tsolovikos on 20220-01-11
+!
+          implicit none
+
+          integer ix,iy,iz,eg,e
+          real xp, yp, zp   
+          include 'SIZE'
+          include 'TOTAL'
+          include 'NEKUSE'
+
+          real ub(lx1,ly1,lz1,lelt), vb(lx1,ly1,lz1,lelt)
+          common /blasiusvel/ ub, vb
+
+          e = gllel(eg)
+
+          xp = xm1(ix,iy,iz,e)
+          yp = ym1(ix,iy,iz,e)
+          zp = zm1(ix,iy,iz,e)
+
+
+
+         ux   = ub(ix,iy,iz,e)
+         uy   = vb(ix,iy,iz,e)
+         uz   = 0.0
+          temp = 0.0
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine userchk
+          include 'SIZE'
+          include 'TOTAL'
+
+          integer icalld
+          save    icalld
+          data    icalld /0/
+
+          real atime,timel
+          save atime,timel
+
+          integer ntdump
+          save    ntdump
+
+          real    rwk(INTP_NMAX,ldim+1,NLINES) ! r, s, t, dist2
+          integer iwk(INTP_NMAX,3,NLINES)      ! code, proc, el 
+          save    rwk, iwk
+
+          integer nint, intp_h(NLINES)
+          save    nint, intp_h
+
+          logical iffpts
+          save iffpts
+
+          real xint(INTP_NMAX,NLINES),yint(INTP_NMAX),zint(INTP_NMAX)
+          save xint, yint, zint
+          save igs_z
+
+          parameter(nstat=7)
+          real ravg(lx1*ly1*lz1*lelt,nstat)
+          real stat(lx1*ly1*lz1*lelt,nstat)
+          real stat_y(INTP_NMAX*nstat,NLINES)
+
+          save ravg, stat, stat_y
+          real xtmp
+          real u_tau_y(NLINES), Re_tau_y(NLINES)
+
+          logical ifverbose
+          real ymin, ymax
+
+          ! For turb_outflow
+          common /myoutflow/ d(lx1,ly1,lz1,lelt),m1(lx1*ly1*lz1,lelt)
+          real m1
+          !for lsm_generator
+          real :: Amatrix(lx1,ly1,lz1,lelt), Amat(lx1,ly1,lz1,lelt)
+          real :: A_factor(20000)
+          common /lsm_generator/ Amatrix, Amat, A_factor
+
+          ! Compute vorticity RMS in laminar boundary layer
+          real vort(lx1*ly1*lz1*lelt,3) 
+          real wxavg(lx1*ly1*lz1*lelt), wyavg(lx1*ly1*lz1*lelt), wzavg(lx1*ly1*lz1*lelt)
+          save wxavg, wyavg, wzavg
+
+          ! Useful constants
+          n = nelv * 2**ldim
+          ymin = glmin(yc,n)
+          ymax = glmax(yc,n)
+ 
+          n     = nx1*ny1*nz1*nelv
+          nelx  = NUMBER_ELEMENTS_X
+          nely  = NUMBER_ELEMENTS_Y
+          nelz  = NUMBER_ELEMENTS_Z
+
+          ! ***********************
+          ! Ensure outflow condition is always moving out
+          ! ***********************
+
+!         if (time .gt. 40 .and. time .lt. 50) then
+!             rq  = 1.25
+!             uin = 0.
+!             call turb_outflow(d,m1,rq,uin)
+!         end if
+ 
+          ! ***********************
+          ! Reset roughness
+          ! ***********************
+!         if (mod(istep,int(uparam(10))) .eq. 0) call set_roughness
+
+          ! ***********************
+          ! Compute statistics
+          ! ***********************
+          if (time .ge. tSTATSTART) then
+              if (icalld .eq. 0) then
+                  if(nid .eq. 0) write(6,*) 'Collecting statistics ...'
+
+                  nxm = 1 ! mesh is linear
+                  do i = 1,NLINES
+                      call interp_setup(intp_h(i),0.0,nxm,nelt)
+                  end do
+                  nint = 0
+                  if (nid.eq.0) then
+                      nint = INTP_NMAX
+                      do i = 1,NLINES
+                          xtmp = XCINT + DXCINT * (i - 1)
+                          call cfill(xint(1,i),xtmp,nint)
+                      end do
+                      do i = 1,INTP_NMAX 
+                          yi = (i-1.)/(INTP_NMAX-1)
+                          yint(i) = ymin + (ymax - ymin) * (tanh(BETAM * (yi-1.)) / tanh(BETAM) + 1.)
+                      end do
+                      call cfill(zint,ZCINT,size(zint))
+                  end if
+                  iffpts = .true. ! dummy call to find points
+                  do i = 1,NLINES
+                      call interp_nfld(stat_y(1,i),ravg,1,xint(1,i),yint,zint,nint,
+     $                                 iwk(1,1,i),rwk(1,1,i),INTP_NMAX,iffpts,intp_h(i))
+                  end do
+                  iffpts = .false.
+
+                  call gtpp_gs_setup(igs_z,nelx*nely,1   ,nelz,3) ! z-avg
+                  call rzero(ravg,size(ravg))
+
+                  atime  = 0
+                  timel  = time
+                  ntdump = int(time/tSTATFREQ)
+                  icalld = 1
+              endif
+
+              dtime = time - timel
+              atime = atime + dtime
+
+              ! averaging over time
+              if (atime .ne. 0. .and. dtime .ne. 0.) then
+                  beta  = dtime / atime
+                  alpha = 1. - beta
+                  ifverbose = .false.
+                  call avg1(ravg(1,1),vx   ,alpha,beta,n,'uavg',ifverbose)
+                  call avg1(ravg(1,2),vy   ,alpha,beta,n,'vavg',ifverbose)
+                  call avg1(ravg(1,3),vz   ,alpha,beta,n,'wavg',ifverbose)
+                  call avg2(ravg(1,4),vx   ,alpha,beta,n,'urms',ifverbose)
+                  call avg2(ravg(1,5),vy   ,alpha,beta,n,'vrms',ifverbose)
+                  call avg2(ravg(1,6),vz   ,alpha,beta,n,'wrms',ifverbose)
+                  call avg3(ravg(1,7),vx,vy,alpha,beta,n,'uvmm',ifverbose)
+              end if
+
+              timel = time
+
+              ! write statistics to file
+              if (istep .gt. 0 .and. time .gt. (ntdump+1)*tSTATFREQ) then
+                  write(*,*) 'Writing statistics...'
+
+                  ! averaging over statistical homogeneous direction (z)
+                  do i = 1,nstat
+                      call planar_avg(stat(1,i),ravg(1,i),igs_z) ! Average in z direction
+                  end do
+
+                  ! extract data along wall normal direction (1D profile)
+                  do i = 1,NLINES
+                      call interp_nfld(stat_y(1,i),stat,nstat,xint(1,i),yint,zint,nint,
+     $                                 iwk(1,1,i),rwk(1,1,i),INTP_NMAX,iffpts,intp_h(i))
+                  end do
+
+                  ntdump = ntdump + 1
+
+                  if (nid .eq. 0) then
+                      rho    = param(1)
+                      dnu    = param(2)
+
+                      ! Compute friction veolicities
+                      write(6,*) 'Friction velocities:'
+                      do i = 1,NLINES
+                          ! 2nd order forward differentiation of du/dy
+                          tw = dnu * rho * (
+     &                         (2*yint(1) - yint(2) - yint(3))/(yint(2)-yint(1))/(yint(3)-yint(1)) * stat_y(0*nint+1,i)
+     &                       + (yint(3) - yint(1))/(yint(2)-yint(1))/(yint(3)-yint(2)) * stat_y(0*nint+2,i)
+     &                       + (yint(1) - yint(2))/(yint(3)-yint(2))/(yint(3)-yint(1)) * stat_y(0*nint+3,i)
+     &                    )
+                          u_tau_y(i) = sqrt(tw / rho)
+                          Re_tau_y(i) = u_tau_y(i) / dnu
+                         write(6,*) 'x = ', XCINT + DXCINT * (i - 1), 
+     &                              'u_tau = ', u_tau_y(i)
+                      end do
+ 
+                      ! Write current statistics to file
+                      open(unit=56,file='statistics_prof.dat')
+                      write(56,'(A,1pe14.7)') '#time = ', time
+                      write(56,'(A)') 
+     $                '#  y  y+  u  u+  v+  w+ uu+ vv+ ww+ uv+'
+
+                      do j = 1,NLINES 
+                          write(56,'(A)') new_line('a')
+                          write(56,'(A,1pe14.7)') '#x = ', XCINT + DXCINT * (j - 1)
+                          do i = 1,nint
+                              yy = yint(i)
+                              write(56,3) 
+     &                             yy,
+     &                             yy*Re_tau_y(j),
+     &                             stat_y(0*nint+i,j),
+     &                             stat_y(0*nint+i,j)/u_tau_y(j),
+     &                             stat_y(1*nint+i,j)/u_tau_y(j),
+     &                             stat_y(2*nint+i,j)/u_tau_y(j),
+     &                             (stat_y(3*nint+i,j)-(stat_y(0*nint+i,j))**2)/u_tau_y(j)**2,
+     &                             (stat_y(4*nint+i,j)-(stat_y(1*nint+i,j))**2)/u_tau_y(j)**2,
+     &                             stat_y(5*nint+i,j)/u_tau_y(j)**2,
+     &                             (stat_y(6*nint+i,j)-stat_y(0*nint+i,j)*stat_y(1*nint+i,j))/u_tau_y(j)**2
+
+  3                           format(1p15e17.9)
+                          end do
+                      end do
+
+                      close(56)
+                  end if
+              end if
+          end if
+
+          if (istep .eq. 1) then
+              ! Save vorticity
+              call comp_vort3(vort, w1, w2, vx, vy, vz)
+              call copy(wxavg,vort(1,1),n) ! vorticity x
+              call copy(wyavg,vort(1,2),n) ! vorticity y
+              call copy(wzavg,vort(1,3),n) ! vorticity z
+          end if
+
+          if (mod(istep, 10) .eq. 0) then
+              ! Save vorticity fluctuations profile
+              !call comp_vort3(vort, w1, w2, vx, vy, vz)
+              !call sub3(t(1,1,1,1,2),vort(1,1),wxavg,n)
+              !call sub3(t(1,1,1,1,3),vort(1,2),wyavg,n)
+              !call sub3(t(1,1,1,1,4),vort(1,3),wzavg,n)
+              !call hpts()
+              ! Save vorticity profile
+              call comp_vort3(vort, w1, w2, vx, vy, vz)
+              call copy(t(1,1,1,1,2),vort(1,1),n)
+              call copy(t(1,1,1,1,3),vort(1,2),n)
+              call copy(t(1,1,1,1,4),vort(1,3),n)
+              call hpts()
+          end if
+
+
+          ! ***********************
+          ! Save additional fields
+          ! ***********************
+          if (ifoutfld) then
+              ! Output orthogonal grid
+!             ifreguo = .true.
+
+              ifto = .true.
+              call copy(t(1,1,1,1,1),Amat,n)
+!             call lambda2(t(1,1,1,1,1)) ! Put lambda2 into temperature field
+
+              ! Save velocity fluctuations profile
+!             call sub3(t(1,1,1,1,2),vx,stat(1,1),n) ! u - u_mean
+!             call sub3(t(1,1,1,1,3),vy,stat(1,2),n) ! v - v_mean
+!             call sub3(t(1,1,1,1,4),vz,stat(1,3),n) ! w - w_mean
+          end if
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine userqtl ! Set thermal divergence
+
+      call userqtl_scig 
+
+      return
+      end
+!-----------------------------------------------------------------------
+      subroutine usrdat()   ! This routine to modify element vertices
+
+!      implicit none
+
+      include 'SIZE'
+      include 'TOTAL'
+
+       integer n
+       real ymin, ymax
+ 
+       ! Modify y-coordinate of elements
+       n = nelv * 2**ldim
+       ymin = glmin(yc,n)
+       ymax = glmax(yc,n)
+ 
+       do i = 1,n
+           yc(i,1) = ymin + (ymax - ymin) * (tanh(BETAM * (yc(i,1)/(ymax-ymin)-1)) / tanh(BETAM) + 1)
+       end do
+
+      return
+      end
+!-----------------------------------------------------------------------
+      subroutine usrdat2()  ! This routine to modify mesh coordinates
+
+!         implicit none
+
+          include 'SIZE'
+          include 'TOTAL'
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine usrdat3()
+
+          implicit none
+
+          include 'SIZE'
+          include 'TOTAL'
+
+          integer n, i, seed_i
+          real xp, yp, zp
+
+          real ub(lx1,ly1,lz1,lelt), vb(lx1,ly1,lz1,lelt)
+          common /blasiusvel/ ub, vb
+
+          real fxintg(lx1,ly1,lz1,lelt), fyintg(lx1,ly1,lz1,lelt), fzintg(lx1,ly1,lz1,lelt)
+          integer imatrix(lx1,ly1,lz1,lelt)
+          common /ibforces/ fxintg, fyintg, fzintg, imatrix
+
+          integer, dimension(:), allocatable :: seed
+          integer seed_num
+
+          ! Jet data
+          real jet_input(25000)
+          integer jet_nsteps
+          common /gaussian_jet_data/ jet_input, jet_nsteps
+
+          imatrix = 0
+         ! Set blasius velocity profile
+          call set_blasius(ub, vb)
+
+          ! Set random number generator
+          seed_num = np
+          call random_seed(size=seed_num)
+          allocate(seed(seed_num))
+          do i = 1, seed_num
+              seed(i) = 2 + nid * 21
+          end do
+          call random_seed(put=seed)
+
+          ! Set roughness
+!         call set_roughness        
+          call generate_lsm !to generate LSM's 
+!         ! Output orthogonal grid
+!         ifreguo = .true.
+
+          ! Read control inputs
+          open(10, file='flat_plate.inp', status='old', action='read')
+          read(10, *) jet_nsteps
+          do i = 1, min(jet_nsteps, size(jet_input))
+              read(10, *) jet_input(i)
+          end do
+          close(10)
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine set_roughness
+
+          implicit none
+
+          include 'SIZE'
+          include 'TOTAL'
+
+          integer n, i, seed_i
+          real xp, yp, zp
+
+          real fxintg(lx1,ly1,lz1,lelt), fyintg(lx1,ly1,lz1,lelt), fzintg(lx1,ly1,lz1,lelt)
+          integer imatrix(lx1,ly1,lz1,lelt)
+          common /ibforces/ fxintg, fyintg, fzintg, imatrix
+
+          real roughness_height(lx1,ly1,lz1,lelt)
+
+          ! Prepare grid for immersed boundary forces
+          ! Note:
+          !     no force:             imatrix = 0 (default)
+          !     solid boundary force: imatrix = 1
+          !
+          n = nx1*ny1*nz1*nelv
+
+          ! Randomize roughness height (must be the same along the y direction)
+          call random_number(roughness_height)
+          roughness_height = roughness_height * uparam(9)
+          do i = 1, ly1
+              roughness_height(:,i,:,:) = roughness_height(:,1,:,:)
+          end do
+
+          do i = 1, n
+              xp = xm1(i,1,1,1)
+              yp = ym1(i,1,1,1)
+              zp = zm1(i,1,1,1)
+
+              ! Set roughness strip
+              if (abs(xp - 2.0) <= 0.4) then
+                  fxintg(i,1,1,1) = 0
+                  fyintg(i,1,1,1) = 0
+                  fzintg(i,1,1,1) = 0
+                  imatrix(i,1,1,1) = 0
+                  if (yp <= roughness_height(i,1,1,1)) imatrix(i,1,1,1) = 2
+              end if
+          end do
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine set_blasius(ub,vb)
+          
+          implicit none
+
+          include 'SIZE'
+          include 'TOTAL'
+
+          integer n, i
+          real ub(lx1,ly1,lz1,lelt), vb(lx1,ly1,lz1,lelt)
+          real nu, U_inf, x_start
+          real xp, yp, eta_tmp, f_tmp, fp_tmp, Rex
+
+          real eta(10001), f(10001), fp(10001)
+
+          ! 1. Solve the Falkner–Skan equation.
+          call solve_blasius(eta, f, fp)
+
+          ! 2. Iterate through all points and compute Blasius velocity
+          !    from the presolved FS equation. For locations not in eta,
+          !    do linear interpolation.
+
+          n = nx1*ny1*nz1*nelv
+
+          nu = param(2) / param(1) ! Kinematic viscosity
+          x_start = uparam(1)      ! Momentum thickness at the inlet (x = 0)
+          U_inf = uparam(2)        ! Free-steram velocity
+
+          do i = 1, n
+              xp = xm1(i,1,1,1) + x_start
+              yp = ym1(i,1,1,1)
+              Rex = U_inf * xp / nu
+
+              eta_tmp = yp / xp * sqrt(Rex)
+              call pwl_value_1d(10001,eta,f,1,eta_tmp,f_tmp)
+              call pwl_value_1d(10001,eta,fp,1,eta_tmp,fp_tmp)
+
+              ub(i,1,1,1) = U_inf * fp_tmp
+              vb(i,1,1,1) = U_inf * (eta_tmp * fp_tmp - f_tmp)/(2.0 * sqrt(Rex))
+          end do
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine solve_blasius(eta,f,fp)
+          
+          implicit none
+
+          include 'SIZE'
+          include 'TOTAL'
+
+          real, intent(out) :: eta(10001), f(10001), fp(10001)
+          real, parameter :: deta = 1.e-6
+          real f_tmp, fp_tmp, fpp_tmp, fppp_tmp, eta_tmp
+          integer i
+
+          f_tmp = 0
+          fp_tmp = 0
+          fpp_tmp = 0.332
+          fppp_tmp = 0
+          eta_tmp = 0
+          i = 1
+
+          do while (eta_tmp <= 10.0)
+              fpp_tmp = fpp_tmp + deta * fppp_tmp
+              fp_tmp = fp_tmp + deta * fpp_tmp
+              f_tmp = f_tmp + deta * fp_tmp
+              fppp_tmp = -0.5 * f_tmp * fpp_tmp
+
+              if (mod(i-1,1000) == 0) then
+                  eta(i/1000+1) = eta_tmp
+                  f(i/1000+1) = f_tmp
+                  fp(i/1000+1) = fp_tmp
+              end if
+
+              i = i + 1
+              eta_tmp = eta_tmp + deta
+          end do
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine gamma_jet(ix,iy,iz,eg)
+          
+          implicit none
+
+          integer ix,iy,iz,eg
+          real pgain, igain
+
+          real jet_gain, jet_xc, jet_yc, jet_zc, jet_ax, jet_ay, jet_az
+          real xp, yp, zp
+
+          real jet_input(25000)
+          integer jet_nsteps
+          common /gaussian_jet_data/ jet_input, jet_nsteps
+
+          include 'SIZE'
+          include 'TOTAL'
+          include 'NEKUSE'
+
+          integer e
+          e = gllel(eg)
+
+          xp = xm1(ix,iy,iz,e)
+          yp = ym1(ix,iy,iz,e)
+          zp = zm1(ix,iy,iz,e)
+
+          ! Compute jet force
+          jet_xc = 4.5
+          jet_yc = 0.0
+          jet_zc = 1.0
+          jet_ax = 0.5 ! 5*jet_ax ~ magnitude > 0.01
+          jet_ay = 0.25 
+          jet_az = 0.25
+
+          jet_gain = (xp - jet_xc) / jet_ax * exp(1. - (xp - jet_xc) / jet_ax) *    ! Gamma in x
+     &    exp(-0.5 * (
+     &      + (yp - jet_yc)**2 / jet_ay**2                                          ! Gaussian in y
+     &      + (zp - jet_zc)**2 / jet_az**2))                                        ! Gaussian in z
+
+          if (jet_gain >= 0.01 .and. istep <= jet_nsteps) then
+              ffx =  0.5 * 0.5 * jet_input(istep) * jet_gain
+              ffy = -0.5 * 0.5 * jet_input(istep) * jet_gain
+              ffz =  0.0
+
+              ! Save for visualization
+              if (ifoutfld) t(ix,iy,iz,e,1) = 0.5 * jet_input(istep) * jet_gain
+!         else
+!             if (ifoutfld) t(ix,iy,iz,e,1) = 0.0
+          end if
+
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine pwl_basis_1d(nd,xd,ni,xi,bk)
+      !
+      !! PWL_BASIS_1D evaluates a 1D piecewise linear basis function.
+      !
+      !  Licensing:
+      !
+      !    This code is distributed under the GNU LGPL license.
+      !
+      !  Modified:
+      !
+      !    01 July 2015
+      !
+      !  Author:
+      !
+      !    John Burkardt
+      !
+      !  Parameters:
+      !
+      !    Input, integer ND, the number of data points.
+      !    Input, real ( kind = rk ) XD(ND), the data points.
+      !    Input, integer NI, the number of interpolation points.
+      !    Input, real ( kind = rk ) XI(NI), the interpolation points.
+      !    Output, real ( kind = rk ) BK(NI,ND), the basis functions at the 
+      !    interpolation points.
+      !
+          implicit none
+      
+          integer, parameter :: rk = kind (1.0D+00)
+      
+          integer nd
+          integer ni
+      
+          real (kind = rk) bk(ni,nd)
+          integer i
+          integer j
+          real (kind = rk) t
+          real (kind = rk) xd(nd)
+          real (kind = rk) xi(ni)
+      
+          bk(1:ni,1:nd) = 0.0D+00
+      
+          if ( nd == 1 ) then
+              bk(1:ni,1:nd) = 1.0D+00
+              return
+          end if
+      
+          do i = 1, ni
+              do j = 1, nd
+                  if ( j == 1 .and. xi(i) <= xd(j) ) then
+                      t = ( xi(i) - xd(j) ) / ( xd(j+1) - xd(j) )
+                      bk(i,j) = 1.0D+00 - t
+                  else if ( j == nd .and. xd(j) <= xi(i) ) then
+                      t = ( xi(i) - xd(j-1) ) / ( xd(j) - xd(j-1) )
+                      bk(i,j) = t
+                  else if ( xd(j-1) < xi(i) .and. xi(i) <= xd(j) ) then
+                      t = ( xi(i) - xd(j-1) ) / ( xd(j) - xd(j-1) )
+                      bk(i,j) = t
+                  else if ( xd(j) <= xi(i) .and. xi(i) < xd(j+1) ) then
+                      t = ( xi(i) - xd(j) ) / ( xd(j+1) - xd(j) )
+                      bk(i,j) = 1.0D+00 - t
+                  end if
+              end do
+          end do
+          return
+      end
+!-----------------------------------------------------------------------
+      subroutine pwl_value_1d(nd,xd,yd,ni,xi,yi)
+      !
+      !! PWL_VALUE_1D evaluates the piecewise linear interpolant.
+      !
+      !  Discussion:
+      !
+      !    The piecewise linear interpolant L(ND,XD,YD)(X) is the piecewise
+      !    linear function which interpolates the data (XD(I),YD(I)) for I = 1
+      !    to ND.
+      !
+      !  Licensing:
+      !
+      !    This code is distributed under the GNU LGPL license.
+      !
+      !  Modified:
+      !
+      !    22 September 2012
+      !
+      !  Author:
+      !
+      !    John Burkardt
+      !
+      !  Parameters:
+      !
+      !    Input, integer ND, the number of data points.
+      !    ND must be at least 1.
+      !    Input, real ( kind = rk ) XD(ND), the data points.
+      !    Input, real ( kind = rk ) YD(ND), the data values.
+      !    Input, integer NI, the number of interpolation points.
+      !    Input, real ( kind = rk ) XI(NI), the interpolation points.
+      !    Output, real ( kind = rk ) YI(NI), the interpolated values.
+      !
+          implicit none
+        
+          integer, parameter :: rk = kind (1.0D+00)
+        
+          integer nd
+          integer ni
+        
+          integer i
+          integer k
+          real (kind = rk) t
+          real (kind = rk) xd(nd)
+          real (kind = rk) yd(nd)
+          real (kind = rk) xi(ni)
+          real (kind = rk) yi(ni)
+        
+          yi(1:ni) = 0.0D+00
+        
+          if ( nd == 1 ) then
+              yi(1:ni) = yd(1)
+              return
+          end if
+        
+          do i = 1, ni
+              if ( xi(i) <= xd(1) ) then
+                  t = ( xi(i) - xd(1) ) / ( xd(2) - xd(1) )
+                  yi(i) = ( 1.0D+00 - t ) * yd(1) + t * yd(2)
+              else if ( xd(nd) <= xi(i) ) then
+                  t = ( xi(i) - xd(nd-1) ) / ( xd(nd) - xd(nd-1) )
+                  yi(i) = ( 1.0D+00 - t ) * yd(nd-1) + t * yd(nd)
+              else
+                  do k = 2, nd
+                      if ( xd(k-1) <= xi(i) .and. xi(i) <= xd(k) ) then
+                          t = ( xi(i) - xd(k-1) ) / ( xd(k) - xd(k-1) )
+                          yi(i) = ( 1.0D+00 - t ) * yd(k-1) + t * yd(k)
+                          exit
+                      end if
+                  end do
+              end if
+          end do
+          return
+      end
+
+!--------------------------------------------------------------------
+!------------Akshit 03/24/2022 
+
+      subroutine generate_lsm
+
+          implicit none
+
+          include 'SIZE'
+          include 'TOTAL'
+
+          integer :: n, i
+          REAL :: radx, rady, radz, betax, betay, betaz, xi, zi, yi, twopi
+          REAL :: fy
+          REAL :: fz
+          REAL :: fx
+          real :: a1,a2
+          real ::cut_off
+          real :: xp, yp, zp
+          integer :: perturbtime
+          INTEGER :: lsm,num_hairpins,it_base_rise,it_base_fall,it_base_no_hairpin
+          INTEGER :: t2,t3,t1,t4
+          INTEGER :: it_pulse_start,it_pulse_end,it_start_base,nhpin
+
+          real :: Amatrix(lx1,ly1,lz1,lelt), Amat(lx1,ly1,lz1,lelt)
+          real :: A_factor(20000)
+          common /lsm_generator/ Amatrix, Amat, A_factor
+
+          real fxintg(lx1,ly1,lz1,lelt), fyintg(lx1,ly1,lz1,lelt), fzintg(lx1,ly1,lz1,lelt)
+          integer imatrix(lx1,ly1,lz1,lelt)
+          common /ibforces/ fxintg, fyintg, fzintg, imatrix
+
+          ! Read lsm.config file, Akshit 10/14/2021
+          open(106, file='lsm.config', status='old')
+          read(106,*) lsm
+          if (lsm .eq. 1) then 
+               read(106,*) betay
+               read(106,*) betaz
+               read(106,*) betax
+               read(106,*) rady
+               read(106,*) radz
+               read(106,*) radx
+               read(106,*) xi                
+               read(106,*) yi
+               read(106,*) zi
+               read(106,*) a1
+               read(106,*) a2
+               read(106,*) num_hairpins
+               read(106,*) it_base_rise
+               read(106,*) it_base_fall
+               read(106,*) it_base_no_hairpin
+               read(106,*) t2
+               read(106,*) t3
+               read(106,*) t4
+               read(106,*) perturbtime        
+               read(106,*) cut_off 
+          end if   
+          close(106)
+          t1 = num_hairpins*(t2+t3)+it_base_rise+it_base_fall+it_base_no_hairpin+(it_base_no_hairpin-t3)
+          Amat = 0
+          pi = 4*atan(1.0)
+          twopi = 2*pi
+          n = nx1*ny1*nz1*nelv
+              !***************************** calculate Amatrix  
+              do i = 1, n
+                  xp = xm1(i,1,1,1)
+                  yp = ym1(i,1,1,1)
+                  zp = zm1(i,1,1,1)
+               !hard codinf the length of y 28 for this case
+               fy = 0.5*(1.0+tanh(betay*(rady-abs(-0.5*(cos(pi*yp/2.0)-1.0)-yi)))) 
+               fz = 0.5*(1.0+tanh(betaz*(radz-abs(zp-zi))))
+               fx = 0.5*(1.0 +tanh(betax*(radx-abs(xp-xi))))
+               Amatrix(i,1,1,1) = fy*fx*fz  !force
+                    if (Amatrix(i,1,1,1) > 0.2) then
+                        imatrix(i,1,1,1) = 3
+                    end if
+                    if ((a1+a2)*Amatrix(i,1,1,1) .ge. cut_off) then
+                        Amatrix(i,1,1,1) = 0
+                    end if
+              end do
+              !********************************
+              nhpin = 1
+              do i = 1, 20000
+                IF ((i .ge. 1).AND.(i .LE. perturbtime)) THEN
+                !Akshit 10/22/2021 fixed and restructured Pranav's code with major bugs
+                       IF ( mod(i,(t1+t4)) .LE. t1) THEN
+                          ! Growth to A1 level
+                          IF ( mod(i,t1+t4) .LE. it_base_rise) THEN
+                              it_start_base = i-mod(i,t1+t4)
+                              A_factor(i) = a1*sin((0.5*pi/it_base_rise)*(i-it_start_base))
+                          ENDIF
+                          !Stationary at A1 level
+                          if ((mod(i,t1+t4) .ge. it_base_rise) .and. (mod(i,t1+t4) .le. it_base_rise+it_base_no_hairpin)) then
+                                A_factor(i) = a1
+                          end if      
+                          ! Pulsing
+                          it_pulse_start = it_base_rise+it_base_no_hairpin+(nhpin-1)*(t2+t3)
+                          it_pulse_end = it_base_rise+it_base_no_hairpin+nhpin*(t2+t3)
+                          IF ( (mod(i,t1+t4) .ge. it_pulse_start) .AND. (mod(i,t1+t4) .LE. it_pulse_end-t3)) THEN
+                                A_factor(i) = a1+a2*sin((pi/t2)*(mod(i,t1+t4)-it_pulse_start))
+                          else if ( (mod(i,t1+t4) .ge. it_pulse_end-t3) .and. (mod(i,t1+t4) .le. it_pulse_end)) then
+                                A_factor(i) = a1
+                          else if (mod(i,t1+t4) .gt. it_pulse_end) then
+                                A_factor(i) = a1
+                                nhpin = nhpin + 1    
+                          END IF
+                          !stationary at a1 after pulsing
+                          if(mod(i,t1+t4) .ge. t1-it_base_fall-it_base_no_hairpin .and. (mod(i,t1+t4) .le. t1-it_base_fall)) then
+                                A_factor(i) = a1
+                          end if
+                          ! Descent from A1 level
+                          IF (mod(i,t1+t4) .ge. t1-it_base_fall) THEN
+                              A_factor(i) = a1*sin((0.5*pi/it_base_fall)*(t1-mod(i,t1+t4)))
+                          END IF
+                       END IF
+                       IF ((mod(i,(t1+t4)) .Gt. t1) .or. mod(i,(t1+t4)) .eq. 0) THEN
+                          A_factor(i) = 0
+                       END IF
+                END IF
+              end do
+      end
