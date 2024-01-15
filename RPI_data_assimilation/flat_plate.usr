@@ -725,60 +725,73 @@
 	  	  return
 	  end
 !-----------------------------------------------------------------------
-	subroutine RPI_inflow_bc(ux,uy,uz,ix,iy,iz,e)
-	!1D linear time interpolation subroutine for RPI data
-	!Akshit 11/05/2022
+	  subroutine RPI_inflow_bc(ux,uy,uz,ix,iy,iz,e)
+		!1D linear time interpolation subroutine for RPI data
+		!Akshit 11/05/2022
+		
+			implicit none	
 	
-		implicit none	
-
-		include 'SIZE'
-		include 'TOTAL'
-
-		real ux, uy, uz	
-		real dt_rpi
-		integer ix, iy, iz, e, n1
-
-        real ub(lx1,ly1,lz1,lelt), vb(lx1,ly1,lz1,lelt)
-        common /blasiusvel/ ub, vb
-
-		integer, parameter :: n_y = 98 , n_z = 135, n_f = 41
-		real inflow_prof_u(n_z,n_y,n_f), inflow_prof_v(n_z,n_y,n_f), inflow_prof_w(n_z,n_y,n_f)
-		real y_dist(n_y), z_dist(n_z)
-		common /rpi_inflow/ inflow_prof_u, inflow_prof_v, inflow_prof_w, y_dist, z_dist
+			include 'SIZE'
+			include 'TOTAL'
+	
+			real ux, uy, uz	
+			real dt_rpi
+			integer ix, iy, iz, e, n1
+			integer cycle, counter
+	
+			real ub(lx1,ly1,lz1,lelt), vb(lx1,ly1,lz1,lelt)
+			common /blasiusvel/ ub, vb
+	
+			integer, parameter :: n_y = 101, n_z = 101, n_f = 201
+			real inflow_prof_u(n_z,n_y,n_f), inflow_prof_v(n_z,n_y,n_f), inflow_prof_w(n_z,n_y,n_f)
+			real y_dist(n_y), z_dist(n_z)
+			common /rpi_inflow/ inflow_prof_u, inflow_prof_v, inflow_prof_w, y_dist, z_dist
+			
+			real prof_u(n_z,n_y), prof_v(n_z,n_y), prof_w(n_z,n_y)
+			
+			dt_rpi = uparam(3)
+			counter = floor(time/dt_rpi)
+			n1 = mod(counter,n_f) !Frame number
+			cycle = floor(time/dt_rpi/n_f) !Cycle number
+			if (cycle .eq. 0) then
+				if (n1 .eq. 0) then
+					prof_u = inflow_prof_u(:,:,1)
+					prof_v = inflow_prof_v(:,:,1)
+					prof_w = inflow_prof_w(:,:,1)
 		
-		real prof_u(n_z,n_y), prof_v(n_z,n_y), prof_w(n_z,n_y)
+					call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_u, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), ux)
+					call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_v, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uy)
+					call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_w, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uz)
+					
+					ux = (ub(ix,iy,iz,e)*(dt_rpi-time) + ux*(time))/dt_rpi
+					uy = (vb(ix,iy,iz,e)*(dt_rpi-time) + uy*(time))/dt_rpi
+					uz =  uz*time/dt_rpi
+					return 
+				endif
+			endif            
+			if (cycle .gt. 0) then
+				if (n1 .eq. 0) then
+					prof_u = (inflow_prof_u(:,:,n_f)*((counter+1)*dt_rpi-time) + inflow_prof_u(:,:,1)*(time-counter*dt_rpi))/dt_rpi
+					prof_v = (inflow_prof_v(:,:,n_f)*((counter+1)*dt_rpi-time) + inflow_prof_v(:,:,1)*(time-counter*dt_rpi))/dt_rpi
+					prof_w = (inflow_prof_w(:,:,n_f)*((counter+1)*dt_rpi-time) + inflow_prof_w(:,:,1)*(time-counter*dt_rpi))/dt_rpi
 		
-		dt_rpi = 1.0
-		n1 = floor(time/dt_rpi)
-		if (n1 >= n_f) then
-			prof_u = inflow_prof_u(:,:,n_f)
-			prof_v = inflow_prof_v(:,:,n_f)
-			prof_w = inflow_prof_w(:,:,n_f)
-        else if ( n1 .eq. 0) then
-            prof_u = inflow_prof_u(:,:,1)
-			prof_v = inflow_prof_v(:,:,1)
-			prof_w = inflow_prof_w(:,:,1)
-
-            call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_u, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), ux)
-            call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_v, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uy)
-            call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_w, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uz)
-            
-            ux = (ub(ix,iy,iz,e)*(dt_rpi-time) + ux*(time))/dt_rpi
-            uy = (vb(ix,iy,iz,e)*(dt_rpi-time) + uy*(time))/dt_rpi
-            uz =  uz*time/dt_rpi
-        else
-			prof_u = (inflow_prof_u(:,:,n1)*((n1+1)*dt_rpi-time) + inflow_prof_u(:,:,n1+1)*(time-n1*dt_rpi))/dt_rpi
-			prof_v = (inflow_prof_v(:,:,n1)*((n1+1)*dt_rpi-time) + inflow_prof_v(:,:,n1+1)*(time-n1*dt_rpi))/dt_rpi
-			prof_w = (inflow_prof_w(:,:,n1)*((n1+1)*dt_rpi-time) + inflow_prof_w(:,:,n1+1)*(time-n1*dt_rpi))/dt_rpi
-
-            call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_u, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), ux)
-            call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_v, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uy)
-            call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_w, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uz)
-
-		end if
-
-		return
-	end 
+					call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_u, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), ux)
+					call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_v, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uy)
+					call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_w, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uz)
+					return
+				endif
+			endif
+	
+			prof_u = (inflow_prof_u(:,:,n1)*((counter+1)*dt_rpi-time) + inflow_prof_u(:,:,n1+1)*(time-counter*dt_rpi))/dt_rpi
+			prof_v = (inflow_prof_v(:,:,n1)*((counter+1)*dt_rpi-time) + inflow_prof_v(:,:,n1+1)*(time-counter*dt_rpi))/dt_rpi
+			prof_w = (inflow_prof_w(:,:,n1)*((counter+1)*dt_rpi-time) + inflow_prof_w(:,:,n1+1)*(time-counter*dt_rpi))/dt_rpi
+	
+			call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_u, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), ux)
+			call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_v, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uy)
+			call interp_2d_rpi_data(n_z, n_y, z_dist, y_dist, prof_w, 1, zm1(ix,iy,iz,e), ym1(ix,iy,iz,e), uz)
+	
+			return
+		end 
 !--------------------------------------------------------------------
 	subroutine interp_2d_rpi_data(nx,ny,xd,yd,zd,nq,xq,yq,zq)
 	!2D bilinear subroutine for RPI data

@@ -1,57 +1,38 @@
 #
 # nek parameter file
 #
-[GENERAL]
-#startFrom = "flat_plate0.f00050"
+[GENERAL] 
+#startFrom = 
 stopAt = endTime
-endTime = 41.0
+endTime = 30
+# numSteps = 500
 
-dt = 0.005 # In general, use dt = 0.005 but if CFL suddenly blows up, use dt = 0.0025.
-timeStepper = BDF2
+dt = 0.005
+timeStepper = bdf2 
 extrapolation = OIFS
-variableDT = no
+variableDt = no
 targetCFL = 3.5
 
-writeControl = timeStep
-writeInterval = 100
+writeControl = timeStep #runTime
+writeInterval = 200
 writeDoublePrecision = no
 
-filtering = hpfrt
-filterWeight = 10
-filterCutoffRatio = 0.875
-
-userParam01 = 31.1885    # xstart: location of inlet along the boundary layer
+userParam01 = 36    # xstart: location of inlet along the boundary layer
 userParam02 = 1.0   # Freestream velocity.
-userParam03 = 50    # Proportional gain for immersed boundary forces.
-userParam04 = 50    # Integral gain for immersed boundary forces.
-userParam05 = 120.0  # Start time for averaging
-userParam06 = 1.0   # Output frequency for statistics
-userParam07 = 8.0   # x-location of 1D line of statistics
-userParam08 = 1.25  # z-location of 1D line of statistics
-userParam09 = 0.11  # roughness max height
-userParam10 = 5     # every how many steps to update roughness
+userParam03 = 0.005 # non-dimensional dt_rpi
+
+filtering = none #hpfrt, none, explicit
+# filterWeight = 10.0
+# filterCutoffRatio = 0.9
 
 [PROBLEMTYPE]
 equation = incompNS
 
-[VELOCITY]
-density = 1.0
-viscosity = -6365  # A negative value sets 1/nu
-residualTol = 1.e-6
-
 [PRESSURE]
-# preconditioner = semg_amg
+residualTol = 1e-6
 residualProj = yes
-residualTol = 1.e-4
 
-[TEMPERATURE]
-solver = none
-
-#[SCALAR01] # fluctuations in x (after time userParam05)
-#solver = none
-
-#[SCALAR02] # fluctuations in y (after time userParam05)
-#solver = none
-
-#[SCALAR03] # fluctuations in z (after time userParam05)
-#solver = none
+[VELOCITY]
+residualTol = 1e-6
+density = 1.0
+viscosity = -5000.0
